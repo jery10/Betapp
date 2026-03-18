@@ -164,16 +164,16 @@ def render_explanation(exp: dict, home: str, away: str):
     form_df = pd.DataFrame({
         "": ["Points", "Goals scored (avg)", "Goals conceded (avg)", "Venue pts (last 5)"],
         home: [
-            int(fc["home_pts"]),
+            str(int(fc["home_pts"])),
             f"{fc['home_gf']:.1f}",
             f"{fc['home_ga']:.1f}",
-            int(fc["home_venue_pts"]),
+            str(int(fc["home_venue_pts"])),
         ],
         away: [
-            int(fc["away_pts"]),
+            str(int(fc["away_pts"])),
             f"{fc['away_gf']:.1f}",
             f"{fc['away_ga']:.1f}",
-            int(fc["away_venue_pts"]),
+            str(int(fc["away_venue_pts"])),
         ],
     })
     st.dataframe(form_df, use_container_width=True, hide_index=True)
