@@ -1,9 +1,10 @@
 """
-AI-powered chat using Claude API.
+AI-powered chat using Claude API with web search tool.
 Gives the AI full context about the match (form, H2H, stats, prediction)
-so it can reason intelligently about any question or context note.
+and the ability to search the web for current news, injuries, suspensions.
 """
 import os
+import json
 import anthropic
 import pandas as pd
 import numpy as np
@@ -16,7 +17,6 @@ load_dotenv()
 _client = None
 
 def _get_api_key() -> str:
-    """Get API key from Streamlit secrets (cloud) or .env (local)."""
     try:
         import streamlit as st
         return st.secrets.get("ANTHROPIC_API_KEY", os.getenv("ANTHROPIC_API_KEY", ""))
@@ -30,6 +30,46 @@ def _get_client():
     return _client
 
 
+def _web_search(query: str, max_results: int = 4) -> str:
+    """Search DuckDuckGo and return a summary of results."""
+    try:
+        from duckduckgo_search import DDGS
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+        if not results:
+            return "No results found."
+        lines = []
+        for r in results:
+            lines.append(f"**{r.get('title', '')}**")
+            lines.append(r.get('body', ''))
+            lines.append(f"Source: {r.get('href', '')}")
+            lines.append("")
+        return "\n".join(lines)
+    except Exception as e:
+        return f"Search failed: {e}"
+
+
+# Tool definition for Claude
+_SEARCH_TOOL = {
+    "name": "web_search",
+    "description": (
+        "Search the web for current football news, injury updates, suspensions, "
+        "team news, press conference quotes, or any recent information about teams or players. "
+        "Use this whenever the user asks about current news or when you need up-to-date info."
+    ),
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query, e.g. 'Arsenal injury news March 2025' or 'Yamal Barcelona suspension'"
+            }
+        },
+        "required": ["query"]
+    }
+}
+
+
 def _build_match_context(
     home_team: str,
     away_team: str,
@@ -37,15 +77,12 @@ def _build_match_context(
     prediction: dict = None,
     dc_model=None,
 ) -> str:
-    """Build a rich context string about the match for the AI."""
     now = pd.Timestamp.now()
     lines = []
 
-    # Basic match info
     lines.append(f"MATCH: {home_team} (home) vs {away_team} (away)")
     lines.append("")
 
-    # Model prediction
     if prediction:
         lines.append("STATISTICAL MODEL PREDICTION:")
         lines.append(f"  Home win: {prediction['home_win_prob']:.1%}")
@@ -59,7 +96,6 @@ def _build_match_context(
             lines.append(f"  Over 2.5: {m.get('over_25', 0):.1%} | Under 2.5: {m.get('under_25', 0):.1%}")
         lines.append("")
 
-    # Recent form
     if not matches.empty:
         lines.append(f"{home_team.upper()} RECENT FORM (last 5):")
         lines.append(_form_summary(matches, home_team, now))
@@ -68,12 +104,10 @@ def _build_match_context(
         lines.append(_form_summary(matches, away_team, now))
         lines.append("")
 
-        # H2H
         lines.append("HEAD-TO-HEAD (last 6 meetings):")
         lines.append(_h2h_summary(matches, home_team, away_team, now))
         lines.append("")
 
-    # DC ratings
     if dc_model and dc_model.fitted:
         avg_atk = np.mean(list(dc_model.attack.values()))
         avg_def = np.mean(list(dc_model.defense.values()))
@@ -97,43 +131,73 @@ def chat_with_ai(
     history: list = None,
 ) -> tuple[str, list]:
     """
-    Send a message to Claude with full match context.
+    Send a message to Claude with full match context and web search tool.
     Returns (response_text, updated_history).
-    history is a list of {"role": "user"/"assistant", "content": str}
     """
     client = _get_client()
-
     match_context = _build_match_context(home_team, away_team, matches, prediction, dc_model)
 
     system_prompt = f"""You are an expert football analyst and betting advisor built into a personal prediction app.
-You have access to real statistical data about the upcoming match.
+You have access to real statistical data about the upcoming match AND a web search tool to look up current news.
 
 {match_context}
 
 Your role:
 1. Answer questions about the match using the data above
-2. If the user mentions context like injuries, suspensions, new coach, or team news — explain how that would affect the prediction and what adjustments should be made
-3. Give honest, calibrated opinions. Don't overclaim certainty about football predictions
-4. Be concise but insightful. Use bullet points where helpful
-5. If the user asks you to update/adjust the prediction based on new info, explain the direction of the change
+2. Use web_search to find current injury news, suspensions, team news, or any recent developments — especially when the user mentions a player or asks about current form
+3. If the user mentions context like injuries or suspensions, search for confirmation and explain how it affects the prediction
+4. Give honest, calibrated opinions. Don't overclaim certainty about football predictions
+5. Be concise but insightful. Use bullet points where helpful
+6. If asked to update/adjust the prediction based on new info, explain the direction of the change
 
 Important: You are a personal tool. Be direct, practical, and focused on helping the user make a good betting decision.
-Always remind the user that football is unpredictable and to bet responsibly."""
+Always remind the user that football is unpredictable and to bet responsibly.
+Today's date: {pd.Timestamp.now().strftime('%d %B %Y')}"""
 
-    # Build message history
     if history is None:
         history = []
 
     history.append({"role": "user", "content": user_message})
 
-    response = client.messages.create(
-        model="claude-haiku-4-5-20251001",  # Fast + cheap for chat
-        max_tokens=600,
-        system=system_prompt,
-        messages=history,
-    )
+    # Agentic loop — Claude may call web_search one or more times
+    messages = list(history)
+    final_reply = ""
 
-    reply = response.content[0].text
-    history.append({"role": "assistant", "content": reply})
+    while True:
+        response = client.messages.create(
+            model="claude-haiku-4-5-20251001",
+            max_tokens=1024,
+            system=system_prompt,
+            tools=[_SEARCH_TOOL],
+            messages=messages,
+        )
 
-    return reply, history
+        # Check if Claude wants to use a tool
+        if response.stop_reason == "tool_use":
+            # Add Claude's response (with tool call) to messages
+            messages.append({"role": "assistant", "content": response.content})
+
+            # Process each tool call
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    query = block.input.get("query", "")
+                    search_result = _web_search(query)
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block.id,
+                        "content": search_result,
+                    })
+
+            # Add tool results and continue
+            messages.append({"role": "user", "content": tool_results})
+
+        else:
+            # Final response
+            for block in response.content:
+                if hasattr(block, "text"):
+                    final_reply += block.text
+            break
+
+    history.append({"role": "assistant", "content": final_reply})
+    return final_reply, history
