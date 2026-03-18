@@ -2,9 +2,8 @@
 .env
 .streamlit/secrets.toml
 
-# Data & models (too large for git)
+# Data (too large for git)
 data/
-models/
 
 # Python cache
 __pycache__/
