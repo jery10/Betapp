@@ -1,0 +1,19 @@
+# Environment & secrets
+.env
+.streamlit/secrets.toml
+
+# Data & models (too large for git)
+data/
+models/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+
+# OS
+.DS_Store
+Thumbs.db
