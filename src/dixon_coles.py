@@ -144,6 +144,25 @@ class DixonColesModel:
             "under_25": round(float(1 - over_25), 4),
         }
 
+    @staticmethod
+    def predict_goals_ranges(score_matrix: np.ndarray) -> dict:
+        """Probability of total goals falling in each range."""
+        m = score_matrix
+        n = m.shape[0]
+        ranges = {"0-1": 0.0, "2-3": 0.0, "4-5": 0.0, "6+": 0.0}
+        for h in range(n):
+            for a in range(n):
+                total = h + a
+                if total <= 1:
+                    ranges["0-1"] += m[h, a]
+                elif total <= 3:
+                    ranges["2-3"] += m[h, a]
+                elif total <= 5:
+                    ranges["4-5"] += m[h, a]
+                else:
+                    ranges["6+"] += m[h, a]
+        return {k: round(float(v), 4) for k, v in ranges.items()}
+
     def get_team_ratings(self) -> pd.DataFrame:
         data = [
             {

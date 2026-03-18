@@ -75,6 +75,7 @@ class MatchPredictor:
             home_team, away_team, home_atk_adj=ha, home_def_adj=hd,
             away_atk_adj=aa, away_def_adj=ad)
         markets = DixonColesModel.predict_markets(matrix)
+        goals_ranges = DixonColesModel.predict_goals_ranges(matrix)
 
         # XGBoost (no adjustments — uses historical features)
         xgb_probs = None
@@ -108,6 +109,7 @@ class MatchPredictor:
             "xg_home": xg_home,
             "xg_away": xg_away,
             "markets": markets,
+            "goals_ranges": goals_ranges,
             "recommendation": rec,
             "confidence": conf,
             "adjusted": bool(adj),

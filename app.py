@@ -411,6 +411,20 @@ if page == "Upcoming Fixtures":
             if market_filter in ["All Markets", "BTTS"]:
                 st.markdown(market_chips(markets), unsafe_allow_html=True)
 
+            # Goals range bar
+            gr = pred.get("goals_ranges", {})
+            if gr:
+                best_range = max(gr, key=gr.get)
+                range_html = " &nbsp;|&nbsp; ".join(
+                    f'<b style="color:{"#00966e" if k == best_range else "#aaa"}">'
+                    f'{k} goals: {v:.0%}</b>'
+                    for k, v in gr.items()
+                )
+                st.markdown(
+                    f'<div style="font-size:0.85rem;margin:4px 0">⚽ Goals range: {range_html}</div>',
+                    unsafe_allow_html=True,
+                )
+
             # Confidence badge
             conf = pred["confidence"]
             conf_class = {"High": "conf-high", "Medium": "conf-medium", "Low": "conf-low"}.get(conf, "conf-low")
@@ -469,6 +483,16 @@ elif page == "Match Predictor":
         col2.metric("Over 2.5", f"{markets['over_25']:.1%}")
         col3.metric("Over 3.5", f"{markets['over_35']:.1%}")
         col3.metric("Under 2.5", f"{markets['under_25']:.1%}")
+
+        st.markdown("---")
+        st.subheader("Total Goals Range")
+        gr = pred.get("goals_ranges", {})
+        if gr:
+            best_range = max(gr, key=gr.get)
+            gcols = st.columns(len(gr))
+            for i, (label, prob) in enumerate(gr.items()):
+                delta = "Most likely" if label == best_range else ""
+                gcols[i].metric(f"{label} goals", f"{prob:.0%}", delta=delta)
 
         st.markdown("---")
         st.subheader("Why this prediction?")
