@@ -1,9 +1,9 @@
 import pandas as pd
 import numpy as np
 import pickle
+from datetime import datetime
 from pathlib import Path
 from xgboost import XGBClassifier
-from sklearn.model_selection import cross_val_score
 
 from src.dixon_coles import DixonColesModel
 from src.features import build_feature_matrix, get_features_for_match, FEATURE_COLS
@@ -16,50 +16,78 @@ class MatchPredictor:
     def __init__(self):
         self.dc_model = DixonColesModel()
         self.xgb = XGBClassifier(
-            n_estimators=300, max_depth=4, learning_rate=0.05,
-            subsample=0.8, colsample_bytree=0.8,
-            eval_metric="mlogloss", random_state=42, verbosity=0,
+            n_estimators=400,
+            max_depth=4,
+            learning_rate=0.04,
+            subsample=0.75,
+            colsample_bytree=0.75,
+            min_child_weight=3,      # prevents overfitting on small samples
+            gamma=0.1,               # regularization
+            eval_metric="mlogloss",
+            random_state=42,
+            verbosity=0,
         )
         self.fitted = False
         self.cv_accuracy = None
         self.n_matches = 0
+        self.trained_at = None
 
     def train(self, matches: pd.DataFrame) -> "MatchPredictor":
         self.n_matches = len(matches)
-        print("Fitting Dixon-Coles model...")
-        self.dc_model.fit(matches)
+        print("Fitting Dixon-Coles model with time decay...")
+        self.dc_model.fit(matches)  # uses xi=0.004 time decay by default
 
         print("Building training features...")
         feat_df = build_feature_matrix(matches, self.dc_model)
         feat_df = feat_df.dropna(subset=FEATURE_COLS)
 
-        if len(feat_df) < 100:
+        if len(feat_df) < 80:
             print(f"Only {len(feat_df)} samples — using DC only.")
             self.fitted = True
+            self.trained_at = datetime.now()
             return self
 
         X = feat_df[FEATURE_COLS].values
         y = feat_df["result"].values
-        scores = cross_val_score(self.xgb, X, y, cv=5, scoring="accuracy")
-        self.cv_accuracy = float(scores.mean())
-        print(f"XGBoost CV accuracy: {self.cv_accuracy:.3f}")
-        self.xgb.fit(X, y)
+
+        # Time-based sample weights — recent matches matter more
+        if "Date" in feat_df.columns:
+            max_date = feat_df["Date"].max()
+            days_ago = (max_date - feat_df["Date"]).dt.days.values
+            sample_weights = np.exp(-0.002 * days_ago)
+        else:
+            sample_weights = np.ones(len(y))
+
+        self.xgb.fit(X, y, sample_weight=sample_weights)
+
+        # Honest accuracy: train on first 75%, test on last 25% (no leakage)
+        split = int(len(feat_df) * 0.75)
+        X_train_h, y_train_h = X[:split], y[:split]
+        X_val, y_val = X[split:], y[split:]
+        sw_train = sample_weights[:split]
+        if len(X_val) > 20:
+            xgb_val = XGBClassifier(
+                n_estimators=400, max_depth=4, learning_rate=0.04,
+                subsample=0.75, colsample_bytree=0.75, min_child_weight=3,
+                gamma=0.1, eval_metric="mlogloss", random_state=42, verbosity=0,
+            )
+            xgb_val.fit(X_train_h, y_train_h, sample_weight=sw_train)
+            preds = xgb_val.predict(X_val)
+            self.cv_accuracy = float((preds == y_val).mean())
+            print(f"Holdout accuracy (last 25%): {self.cv_accuracy:.3f}")
+
         self.fitted = True
+        self.trained_at = datetime.now()
         return self
 
     def predict(self, home_team: str, away_team: str, matches: pd.DataFrame,
                 adjustment: dict = None) -> dict:
-        """
-        Predict match. adjustment dict from adjustments.parse_context():
-        { home_atk, home_def, away_atk, away_def }
-        """
         adj = adjustment or {}
         ha = adj.get("home_atk", 1.0)
         hd = adj.get("home_def", 1.0)
         aa = adj.get("away_atk", 1.0)
         ad = adj.get("away_def", 1.0)
 
-        # Dixon-Coles with adjustments
         dc_probs = self.dc_model.predict_outcome_probs(
             home_team, away_team, home_atk_adj=ha, home_def_adj=hd,
             away_atk_adj=aa, away_def_adj=ad)
@@ -70,14 +98,12 @@ class MatchPredictor:
             home_team, away_team, home_atk_adj=ha, home_def_adj=hd,
             away_atk_adj=aa, away_def_adj=ad)
 
-        # Score matrix for markets
         matrix = self.dc_model.predict_score_matrix(
             home_team, away_team, home_atk_adj=ha, home_def_adj=hd,
             away_atk_adj=aa, away_def_adj=ad)
         markets = DixonColesModel.predict_markets(matrix)
         goals_ranges = DixonColesModel.predict_goals_ranges(matrix)
 
-        # XGBoost (no adjustments — uses historical features)
         xgb_probs = None
         feat = get_features_for_match(matches, home_team, away_team, pd.Timestamp.now(), self.dc_model)
         if self.fitted and hasattr(self.xgb, "feature_importances_"):
@@ -85,11 +111,10 @@ class MatchPredictor:
             raw = self.xgb.predict_proba(X)[0]
             xgb_probs = {"home_win": float(raw[0]), "draw": float(raw[1]), "away_win": float(raw[2])}
 
-        # Ensemble
         if xgb_probs:
             probs = {
                 "home_win": self.DC_WEIGHT * dc_probs["home_win"] + self.XGB_WEIGHT * xgb_probs["home_win"],
-                "draw": self.DC_WEIGHT * dc_probs["draw"] + self.XGB_WEIGHT * xgb_probs["draw"],
+                "draw":     self.DC_WEIGHT * dc_probs["draw"]     + self.XGB_WEIGHT * xgb_probs["draw"],
                 "away_win": self.DC_WEIGHT * dc_probs["away_win"] + self.XGB_WEIGHT * xgb_probs["away_win"],
             }
         else:

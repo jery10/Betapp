@@ -5,6 +5,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 import streamlit as st
 import pandas as pd
 import numpy as np
+from datetime import datetime
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -234,7 +235,8 @@ if st.sidebar.button("🔄 Retrain Model"):
     st.sidebar.info("Retraining...")
     st.rerun()
 
-if st.sidebar.button("🔃 Refresh Data"):
+if st.sidebar.button("🔃 Refresh Data + Retrain"):
+    _get_model.clear()
     _load_data.clear()
     _load_fixtures.clear()
     _load_standings.clear()
@@ -253,6 +255,17 @@ with st.spinner(f"Loading {cfg['name']} model..."):
 if model is None:
     st.error(f"Could not load data for {cfg['name']}. Check API key.")
     st.stop()
+
+# Show model freshness in sidebar
+if hasattr(model, "trained_at") and model.trained_at:
+    age_hours = (datetime.now() - model.trained_at).total_seconds() / 3600
+    if age_hours < 1:
+        freshness = "🟢 Just trained"
+    elif age_hours < 24:
+        freshness = f"🟡 Trained {age_hours:.0f}h ago"
+    else:
+        freshness = f"🔴 Trained {age_hours/24:.0f}d ago — refresh recommended"
+    st.sidebar.caption(freshness)
 
 matches = _load_data(comp)
 

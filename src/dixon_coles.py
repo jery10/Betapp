@@ -27,7 +27,7 @@ class DixonColesModel:
             return max(1e-10, 1 - rho)
         return 1.0
 
-    def _neg_log_likelihood(self, params, matches):
+    def _neg_log_likelihood(self, params, matches, weights):
         n = len(self.teams)
         attack = params[:n]
         defense = params[n:2 * n]
@@ -35,7 +35,7 @@ class DixonColesModel:
         rho = params[2 * n + 1]
 
         log_lik = 0.0
-        for _, row in matches.iterrows():
+        for i, (_, row) in enumerate(matches.iterrows()):
             try:
                 h = self.teams.index(row["HomeTeam"])
                 a = self.teams.index(row["AwayTeam"])
@@ -47,18 +47,33 @@ class DixonColesModel:
             t = self._tau(hg, ag, lam, mu, rho)
             if t <= 0:
                 return 1e10
-            log_lik += np.log(t) + poisson.logpmf(hg, lam) + poisson.logpmf(ag, mu)
+            w = weights[i] if i < len(weights) else 1.0
+            log_lik += w * (np.log(t) + poisson.logpmf(hg, lam) + poisson.logpmf(ag, mu))
         return -log_lik
 
-    def fit(self, matches: pd.DataFrame) -> "DixonColesModel":
+    def fit(self, matches: pd.DataFrame, xi: float = 0.004) -> "DixonColesModel":
+        """
+        Fit with time decay. xi controls how fast old matches fade:
+          xi=0.004 → match 1yr ago weighted at ~23% of today's match
+          xi=0.002 → match 1yr ago weighted at ~48%
+        """
+        # Use only last 3 years — older data hurts more than it helps
+        cutoff = matches["Date"].max() - pd.Timedelta(days=3 * 365)
+        matches = matches[matches["Date"] >= cutoff].copy().reset_index(drop=True)
+
+        # Time decay weights
+        max_date = matches["Date"].max()
+        days_ago = (max_date - matches["Date"]).dt.days.values
+        weights = np.exp(-xi * days_ago)
+
         self.teams = sorted(list(set(matches["HomeTeam"].unique()) | set(matches["AwayTeam"].unique())))
         n = len(self.teams)
         x0 = np.array([0.3] * n + [0.3] * n + [0.1, -0.1])
         bounds = [(-2.0, 3.0)] * n + [(-2.0, 3.0)] * n + [(0.0, 1.0)] + [(-0.99, 0.0)]
         result = minimize(
-            self._neg_log_likelihood, x0, args=(matches,),
+            self._neg_log_likelihood, x0, args=(matches, weights),
             method="L-BFGS-B", bounds=bounds,
-            options={"maxiter": 2000, "ftol": 1e-12},
+            options={"maxiter": 2000, "ftol": 1e-10},
         )
         params = result.x
         self.attack = {t: params[i] for i, t in enumerate(self.teams)}
@@ -126,15 +141,12 @@ class DixonColesModel:
 
     @staticmethod
     def predict_markets(score_matrix: np.ndarray) -> dict:
-        """Calculate betting market probabilities from score matrix."""
         m = score_matrix
         n = m.shape[0]
-
         btts = sum(m[h, a] for h in range(1, n) for a in range(1, n))
         over_15 = sum(m[h, a] for h in range(n) for a in range(n) if h + a >= 2)
         over_25 = sum(m[h, a] for h in range(n) for a in range(n) if h + a >= 3)
         over_35 = sum(m[h, a] for h in range(n) for a in range(n) if h + a >= 4)
-
         return {
             "btts_yes": round(float(btts), 4),
             "btts_no": round(float(1 - btts), 4),
@@ -146,7 +158,6 @@ class DixonColesModel:
 
     @staticmethod
     def predict_goals_ranges(score_matrix: np.ndarray) -> dict:
-        """Probability of total goals falling in each range."""
         m = score_matrix
         n = m.shape[0]
         ranges = {"0-1": 0.0, "2-3": 0.0, "4-5": 0.0, "6+": 0.0}
