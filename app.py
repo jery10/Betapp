@@ -418,6 +418,7 @@ if page == "Upcoming Fixtures":
                                     prediction=base_pred,
                                     dc_model=model.dc_model,
                                     history=list(st.session_state[fix_chat_key]),
+                                    crowd=get_crowd_signals(home, away),
                                 )
                                 st.markdown(reply)
                                 st.session_state[fix_chat_key] = updated
@@ -612,6 +613,7 @@ elif page == "Match Predictor":
                             prediction=pred,
                             dc_model=model.dc_model,
                             history=list(st.session_state[chat_key]),
+                            crowd=get_crowd_signals(home, away),
                         )
                         st.markdown(reply)
                         st.session_state[chat_key] = updated_history

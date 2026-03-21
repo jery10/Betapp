@@ -76,6 +76,7 @@ def _build_match_context(
     matches: pd.DataFrame,
     prediction: dict = None,
     dc_model=None,
+    crowd: dict = None,
 ) -> str:
     now = pd.Timestamp.now()
     lines = []
@@ -117,6 +118,24 @@ def _build_match_context(
         lines.append(f"  {away_team}: attack {dc_model.attack.get(away_team, avg_atk):.3f}, "
                      f"defense {dc_model.defense.get(away_team, avg_def):.3f}")
         lines.append(f"  Home advantage factor: {dc_model.home_adv:.3f}")
+        lines.append("")
+
+    if crowd and crowd.get("total_predictions", 0) > 0:
+        con = crowd["consensus"]
+        lines.append("TIPKING CROWD PREDICTIONS:")
+        lines.append(f"  Total predictions from real users: {crowd['total_predictions']}")
+        lines.append(f"  Crowd says — Home win: {con.get('home_win_pct', 0)}% | "
+                     f"Draw: {con.get('draw_pct', 0)}% | Away win: {con.get('away_win_pct', 0)}%")
+        lines.append(f"  Crowd top pick: {con.get('top_pick', 'N/A')}")
+        if crowd.get("avg_predicted_home") is not None:
+            lines.append(f"  Avg predicted score: {crowd['avg_predicted_home']} – {crowd['avg_predicted_away']}")
+        if crowd.get("over_25_pct") is not None:
+            lines.append(f"  % predicting over 2.5 goals: {crowd['over_25_pct']}%")
+        reasons = crowd.get("reasoning", [])
+        if reasons:
+            lines.append("  User reasoning from TipKing:")
+            for r in reasons[:5]:
+                lines.append(f"    - \"{r}\"")
 
     return "\n".join(lines)
 
@@ -129,13 +148,14 @@ def chat_with_ai(
     prediction: dict = None,
     dc_model=None,
     history: list = None,
+    crowd: dict = None,
 ) -> tuple[str, list]:
     """
     Send a message to Claude with full match context and web search tool.
     Returns (response_text, updated_history).
     """
     client = _get_client()
-    match_context = _build_match_context(home_team, away_team, matches, prediction, dc_model)
+    match_context = _build_match_context(home_team, away_team, matches, prediction, dc_model, crowd)
 
     system_prompt = f"""You are an expert football analyst and betting advisor built into a personal prediction app.
 You have access to real statistical data about the upcoming match AND a web search tool to look up current news.
