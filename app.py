@@ -16,6 +16,7 @@ from src.adjustments import parse_context, format_adjustments
 from src.explainer import explain_prediction
 from src.chatbot import is_question, answer_question
 from src.ai_chat import chat_with_ai
+from src.tipking import get_crowd_signals
 
 st.set_page_config(
     page_title="Football Predictor",
@@ -178,6 +179,48 @@ def render_explanation(exp: dict, home: str, away: str):
         ],
     })
     st.dataframe(form_df, use_container_width=True, hide_index=True)
+
+
+def render_crowd_signals(home: str, away: str):
+    """Fetch and render TipKing crowd signals for a match."""
+    crowd = get_crowd_signals(home, away)
+    if not crowd:
+        return
+
+    con = crowd["consensus"]
+    n = crowd["total_predictions"]
+    reasons = crowd.get("reasoning", [])
+    avg_h = crowd.get("avg_predicted_home")
+    avg_a = crowd.get("avg_predicted_away")
+    ou_pct = crowd.get("over_25_pct")
+
+    # Colour code consensus vs model
+    label_map = {"H": f"{home} Win", "D": "Draw", "A": f"{away} Win"}
+    top = con.get("top_pick")
+
+    st.markdown(f"""
+    <div style="background:linear-gradient(135deg,#0a2a0a,#0d3d0d);border:1px solid #1e5a1e;
+         border-radius:10px;padding:12px 16px;margin:6px 0">
+      <div style="font-size:0.78rem;font-weight:700;color:#00a651;text-transform:uppercase;
+           letter-spacing:0.5px;margin-bottom:8px">
+        👥 TipKing Crowd — {n} prediction{'s' if n != 1 else ''}
+      </div>
+      <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.88rem">
+        <span style="color:{'#00C851' if top=='H' else '#aaa'}">
+          🏠 Home {con['home_win_pct']}%
+        </span>
+        <span style="color:{'#FFD700' if top=='D' else '#aaa'}">
+          ⚖️ Draw {con['draw_pct']}%
+        </span>
+        <span style="color:{'#ff4444' if top=='A' else '#aaa'}">
+          ✈️ Away {con['away_win_pct']}%
+        </span>
+        {"<span style='color:#aaa'>·</span> <span style='color:#00a651'>Avg score: " + str(avg_h) + "–" + str(avg_a) + "</span>" if avg_h is not None else ""}
+        {"<span style='color:#aaa'>·</span> <span style='color:#aaa'>Over 2.5: " + str(ou_pct) + "%</span>" if ou_pct is not None else ""}
+      </div>
+      {"<div style='margin-top:8px;font-size:0.78rem;color:#7a9a7a'>💬 " + " &nbsp;·&nbsp; ".join(f'"{r}"' for r in reasons[:3]) + "</div>" if reasons else ""}
+    </div>
+    """, unsafe_allow_html=True)
 
 
 def day_momentum_bar(comp: str):
@@ -447,6 +490,8 @@ if page == "Upcoming Fixtures":
                 unsafe_allow_html=True,
             )
 
+            render_crowd_signals(home, away)
+
             with st.expander(f"🧠 Why? — {home} vs {away}"):
                 exp = explain_prediction(home, away, matches, model.dc_model, pred, adj if adj else None)
                 render_explanation(exp, home, away)
@@ -506,6 +551,8 @@ elif page == "Match Predictor":
             for i, (label, prob) in enumerate(gr.items()):
                 delta = "Most likely" if label == best_range else ""
                 gcols[i].metric(f"{label} goals", f"{prob:.0%}", delta=delta)
+
+        render_crowd_signals(home, away)
 
         st.markdown("---")
         st.subheader("Why this prediction?")
