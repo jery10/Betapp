@@ -9,6 +9,7 @@ from datetime import datetime
 import plotly.graph_objects as go
 import plotly.express as px
 
+from src.auth import require_login
 from src.config import COMPETITIONS, MODELS_DIR
 from src.data_fetcher import get_all_results, fetch_upcoming_fixtures, get_standings, get_todays_results
 from src.predictor import MatchPredictor
@@ -17,6 +18,8 @@ from src.explainer import explain_prediction
 from src.chatbot import is_question, answer_question
 from src.ai_chat import chat_with_ai
 from src.tipking import get_crowd_signals
+
+require_login()
 
 st.set_page_config(
     page_title="Football Predictor",
