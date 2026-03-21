@@ -225,7 +225,7 @@ comp = comp_options[comp_label]
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
     "Page",
-    ["Upcoming Fixtures", "Match Predictor", "Team Ratings", "Model Performance"],
+    ["Upcoming Fixtures", "Match Predictor", "Bet Calculator", "Team Ratings", "Model Performance"],
 )
 st.sidebar.markdown("---")
 
@@ -574,6 +574,176 @@ elif page == "Match Predictor":
         if st.session_state[chat_key] and st.button("🗑️ Clear chat", key=f"clear_{home}_{away}"):
             st.session_state[chat_key] = []
             st.rerun()
+
+# ─── PAGE: Bet Calculator ────────────────────────────────────────────────────
+
+elif page == "Bet Calculator":
+    st.markdown('<div class="big-title">💰 Bet Calculator & Risk Analyser</div>', unsafe_allow_html=True)
+    st.caption("Uses the model's probabilities + Kelly Criterion to recommend how much to stake. Only bet when you have an edge.")
+
+    # ── Bankroll & Risk ───────────────────────────────────────────────────────
+    st.markdown("### 1. Your Bankroll & Risk Appetite")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        bankroll = st.number_input("Your bankroll (£)", min_value=10.0, max_value=100000.0,
+                                   value=500.0, step=10.0,
+                                   help="Total amount you're willing to bet with across all matches.")
+    with c2:
+        risk_label = st.selectbox("Risk appetite", ["Conservative (25% Kelly)", "Balanced (50% Kelly)", "Aggressive (Full Kelly)"])
+        kelly_fraction = {"Conservative (25% Kelly)": 0.25, "Balanced (50% Kelly)": 0.5, "Aggressive (Full Kelly)": 1.0}[risk_label]
+    with c3:
+        max_per_bet_pct = st.slider("Max % of bankroll per bet", 1, 20, 5,
+                                    help="Safety cap — never risk more than this on a single bet.")
+    max_per_bet = bankroll * max_per_bet_pct / 100
+
+    st.info(f"**Risk profile:** {risk_label} · Max single bet: **£{max_per_bet:.2f}**")
+
+    st.markdown("---")
+
+    # ── Pick match ────────────────────────────────────────────────────────────
+    st.markdown("### 2. Pick a Match")
+    teams = sorted(model.dc_model.teams)
+    c1, c2 = st.columns(2)
+    with c1:
+        home_bc = st.selectbox("Home Team", teams, key="bc_home")
+    with c2:
+        away_bc = st.selectbox("Away Team", [t for t in teams if t != home_bc], key="bc_away")
+
+    try:
+        pred_bc = model.predict(home_bc, away_bc, matches)
+    except Exception as e:
+        st.error(f"Prediction error: {e}")
+        st.stop()
+
+    hw = pred_bc["home_win_prob"]
+    d  = pred_bc["draw_prob"]
+    aw = pred_bc["away_win_prob"]
+    mk = pred_bc["markets"]
+    gr = pred_bc.get("goals_ranges", {})
+
+    # Show model probabilities
+    st.markdown(f"**Model probabilities for {home_bc} vs {away_bc}:**")
+    st.plotly_chart(render_prob_bar(hw, d, aw, home_bc, away_bc), use_container_width=True)
+    st.caption(f"xG: {pred_bc['xg_home']} – {pred_bc['xg_away']}  ·  Predicted score: {pred_bc['predicted_home_goals']}–{pred_bc['predicted_away_goals']}  ·  Confidence: {pred_bc['confidence']}")
+
+    st.markdown("---")
+
+    # ── Enter bookmaker odds ──────────────────────────────────────────────────
+    st.markdown("### 3. Enter Bookmaker Odds (decimal)")
+    st.caption("Enter the odds your bookmaker is offering. Leave at 0 if you don't want to bet that market.")
+
+    markets_config = [
+        ("1X2: Home Win",    hw,              f"{home_bc} to win"),
+        ("1X2: Draw",        d,               "Match ends draw"),
+        ("1X2: Away Win",    aw,              f"{away_bc} to win"),
+        ("Over 2.5 Goals",   mk["over_25"],   "Total goals > 2.5"),
+        ("Under 2.5 Goals",  mk["under_25"],  "Total goals < 2.5 (incl.)"),
+        ("BTTS Yes",         mk["btts_yes"],  "Both teams score"),
+        ("BTTS No",          mk["btts_no"],   "At least one team doesn't score"),
+        ("Over 1.5 Goals",   mk["over_15"],   "Total goals > 1.5"),
+        ("Over 3.5 Goals",   mk["over_35"],   "Total goals > 3.5"),
+    ]
+    if gr:
+        for label, prob in gr.items():
+            markets_config.append((f"Goals Range: {label}", prob, f"Total goals in range {label}"))
+
+    results = []
+    cols_per_row = 3
+    market_rows = [markets_config[i:i+cols_per_row] for i in range(0, len(markets_config), cols_per_row)]
+
+    for row in market_rows:
+        cols = st.columns(cols_per_row)
+        for i, (mkt_label, model_prob, description) in enumerate(row):
+            with cols[i]:
+                odds = st.number_input(
+                    f"{mkt_label}",
+                    min_value=0.0, max_value=100.0, value=0.0, step=0.05,
+                    key=f"odds_{mkt_label}",
+                    help=f"{description} · Model: {model_prob:.1%}",
+                )
+                if odds > 0:
+                    results.append((mkt_label, model_prob, odds, description))
+
+    st.markdown("---")
+
+    # ── Kelly calculations ────────────────────────────────────────────────────
+    if not results:
+        st.info("👆 Enter bookmaker odds above for any market you want to analyse.")
+    else:
+        st.markdown("### 4. Analysis & Recommendations")
+
+        total_recommended = 0
+        bet_count = 0
+
+        for mkt_label, model_prob, odds, description in results:
+            implied_prob = 1 / odds
+            edge = model_prob - implied_prob
+            ev_pct = (odds * model_prob - 1) * 100  # expected value %
+
+            # Kelly formula
+            b = odds - 1
+            kelly = (b * model_prob - (1 - model_prob)) / b
+            kelly = max(kelly, 0)  # no negative bets
+            stake = min(bankroll * kelly * kelly_fraction, max_per_bet)
+
+            # Rating
+            if edge <= 0:
+                rating = "🔴 No Edge — Skip"
+                color = "#f8d7da"
+            elif edge < 0.05:
+                rating = "🟡 Marginal — Small bet only"
+                color = "#fff3cd"
+            elif edge < 0.12:
+                rating = "🟢 Good Value"
+                color = "#d4edda"
+            else:
+                rating = "🟢🟢 Strong Edge"
+                color = "#c3e6cb"
+
+            st.markdown(f"""
+            <div style="background:{color};border-radius:10px;padding:14px 18px;margin-bottom:10px">
+                <b style="font-size:1rem">{mkt_label}</b><br>
+                <span style="color:#555;font-size:0.85rem">{description}</span><br><br>
+                <table style="width:100%;font-size:0.9rem;border-collapse:collapse">
+                    <tr>
+                        <td><b>Model probability</b></td><td>{model_prob:.1%}</td>
+                        <td><b>Bookmaker implies</b></td><td>{implied_prob:.1%}</td>
+                    </tr>
+                    <tr>
+                        <td><b>Your edge</b></td><td><b>{"+" if edge>0 else ""}{edge:.1%}</b></td>
+                        <td><b>Expected value</b></td><td>{"+" if ev_pct>0 else ""}{ev_pct:.1f}% per £ staked</td>
+                    </tr>
+                    <tr>
+                        <td><b>Kelly stake</b></td><td>{kelly:.1%} of bankroll</td>
+                        <td><b>Recommended bet</b></td><td><b>£{stake:.2f}</b></td>
+                    </tr>
+                </table>
+                <br><b>{rating}</b>
+            </div>
+            """, unsafe_allow_html=True)
+
+            if edge > 0:
+                total_recommended += stake
+                bet_count += 1
+
+        # ── Overall summary ───────────────────────────────────────────────────
+        st.markdown("---")
+        st.markdown("### Summary")
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Bankroll", f"£{bankroll:.0f}")
+        c2.metric("Bets with edge", f"{bet_count} of {len(results)}")
+        c3.metric("Total recommended", f"£{total_recommended:.2f}")
+        c4.metric("% of bankroll at risk", f"{total_recommended/bankroll*100:.1f}%")
+
+        if total_recommended / bankroll > 0.20:
+            st.warning("⚠️ You're risking more than 20% of your bankroll across these bets. Consider reducing stakes or skipping marginal markets.")
+        elif bet_count > 0:
+            st.success(f"✅ Recommended: stake £{total_recommended:.2f} total across {bet_count} bet(s) with positive edge.")
+        else:
+            st.error("❌ No edge found on any market at these odds. Do not bet.")
+
+        st.caption("Kelly Criterion assumes model probabilities are accurate. Never bet what you can't afford to lose.")
+
 
 # ─── PAGE: Team Ratings ───────────────────────────────────────────────────────
 
