@@ -213,8 +213,8 @@ def render_crowd_signals(home: str, away: str):
         st.markdown(f"""
         <div style="background:#111;border:1px solid #333;border-radius:10px;
              padding:10px 16px;margin:6px 0;font-size:0.82rem;color:#888">
-          ⚪ <b>TipKing</b> — connected · no predictions yet for this match
-          <span style="float:right;font-size:0.72rem;color:#555">{url}</span>
+          ⚪ <b>TipKing</b> — connected · no predictions yet for this match<br>
+          <span style="font-size:0.72rem;color:#555">Looking for: <code>{home}</code> vs <code>{away}</code></span>
         </div>""", unsafe_allow_html=True)
         return
 
