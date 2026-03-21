@@ -47,8 +47,6 @@ def require_login():
     if st.session_state.get("authenticated"):
         return
 
-    st.set_page_config(page_title="BetPredict — Sign In", page_icon="🔒", layout="centered")
-
     st.markdown("""
     <style>
     .login-wrap { max-width: 400px; margin: 80px auto; }

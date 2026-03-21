@@ -185,43 +185,66 @@ def render_explanation(exp: dict, home: str, away: str):
 
 
 def render_crowd_signals(home: str, away: str):
-    """Fetch and render TipKing crowd signals for a match."""
-    crowd = get_crowd_signals(home, away)
-    if not crowd:
+    """Fetch and render TipKing crowd signals — always shows connection status."""
+    import requests as _req
+    from src.tipking import TIPKING_URL
+
+    # Try to fetch — distinguish between "connected but empty" and "unreachable"
+    try:
+        url = f"{TIPKING_URL}/api/match/{_req.utils.quote(home)}/vs/{_req.utils.quote(away)}"
+        resp = _req.get(url, timeout=6)
+        reachable = resp.status_code == 200
+        crowd = resp.json() if reachable else None
+    except Exception:
+        reachable = False
+        crowd = None
+
+    n = crowd.get("total_predictions", 0) if crowd else 0
+
+    if not reachable:
+        st.markdown("""
+        <div style="background:#1a0a0a;border:1px solid #5a1e1e;border-radius:10px;
+             padding:10px 16px;margin:6px 0;font-size:0.82rem;color:#ff6b6b">
+          🔴 <b>TipKing</b> — could not reach prediction platform
+        </div>""", unsafe_allow_html=True)
+        return
+
+    if n == 0:
+        st.markdown(f"""
+        <div style="background:#111;border:1px solid #333;border-radius:10px;
+             padding:10px 16px;margin:6px 0;font-size:0.82rem;color:#888">
+          ⚪ <b>TipKing</b> — connected · no predictions yet for this match
+          <span style="float:right;font-size:0.72rem;color:#555">{url}</span>
+        </div>""", unsafe_allow_html=True)
         return
 
     con = crowd["consensus"]
-    n = crowd["total_predictions"]
     reasons = crowd.get("reasoning", [])
     avg_h = crowd.get("avg_predicted_home")
     avg_a = crowd.get("avg_predicted_away")
     ou_pct = crowd.get("over_25_pct")
-
-    # Colour code consensus vs model
-    label_map = {"H": f"{home} Win", "D": "Draw", "A": f"{away} Win"}
     top = con.get("top_pick")
+
+    reasons_html = ""
+    if reasons:
+        items = "".join(f'<div style="margin-top:4px">💬 "{r}"</div>' for r in reasons[:5])
+        reasons_html = f'<div style="margin-top:8px;font-size:0.78rem;color:#7a9a7a">{items}</div>'
 
     st.markdown(f"""
     <div style="background:linear-gradient(135deg,#0a2a0a,#0d3d0d);border:1px solid #1e5a1e;
          border-radius:10px;padding:12px 16px;margin:6px 0">
       <div style="font-size:0.78rem;font-weight:700;color:#00a651;text-transform:uppercase;
            letter-spacing:0.5px;margin-bottom:8px">
-        👥 TipKing Crowd — {n} prediction{'s' if n != 1 else ''}
+        🟢 TipKing Crowd — {n} real prediction{'s' if n != 1 else ''}
       </div>
       <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:0.88rem">
-        <span style="color:{'#00C851' if top=='H' else '#aaa'}">
-          🏠 Home {con['home_win_pct']}%
-        </span>
-        <span style="color:{'#FFD700' if top=='D' else '#aaa'}">
-          ⚖️ Draw {con['draw_pct']}%
-        </span>
-        <span style="color:{'#ff4444' if top=='A' else '#aaa'}">
-          ✈️ Away {con['away_win_pct']}%
-        </span>
-        {"<span style='color:#aaa'>·</span> <span style='color:#00a651'>Avg score: " + str(avg_h) + "–" + str(avg_a) + "</span>" if avg_h is not None else ""}
-        {"<span style='color:#aaa'>·</span> <span style='color:#aaa'>Over 2.5: " + str(ou_pct) + "%</span>" if ou_pct is not None else ""}
+        <span style="color:{'#00C851' if top=='H' else '#aaa'}">🏠 Home {con['home_win_pct']}%</span>
+        <span style="color:{'#FFD700' if top=='D' else '#aaa'}">⚖️ Draw {con['draw_pct']}%</span>
+        <span style="color:{'#ff4444' if top=='A' else '#aaa'}">✈️ Away {con['away_win_pct']}%</span>
+        {"<span style='color:#aaa'>·</span><span style='color:#00a651'> Avg score: " + str(avg_h) + "–" + str(avg_a) + "</span>" if avg_h is not None else ""}
+        {"<span style='color:#aaa'>·</span><span style='color:#aaa'> Over 2.5: " + str(ou_pct) + "%</span>" if ou_pct is not None else ""}
       </div>
-      {"<div style='margin-top:8px;font-size:0.78rem;color:#7a9a7a'>💬 " + " &nbsp;·&nbsp; ".join(f'"{r}"' for r in reasons[:3]) + "</div>" if reasons else ""}
+      {reasons_html}
     </div>
     """, unsafe_allow_html=True)
 
